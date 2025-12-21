@@ -3,4 +3,3 @@ pydub
 noisereduce
 numpy
 scipy
-pyaudioop
