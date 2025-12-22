@@ -7,6 +7,7 @@ from pydub import AudioSegment
 from pydub.utils import mediainfo
 import noisereduce as nr
 from scipy.io import wavfile
+import matplotlib.pyplot as plt
 
 # 設定頁面配置
 st.set_page_config(page_title="音訊降噪與增強工具", page_icon="🎵", layout="centered")
@@ -84,6 +85,33 @@ def enhance_audio(input_path, output_path):
         return False
 
 
+def plot_spectrogram(file_path, title):
+    """
+    繪製頻譜圖的函式
+    """
+    # 讀取音訊
+    sound = AudioSegment.from_file(file_path)
+    # 轉成 numpy array
+    samples = np.array(sound.get_array_of_samples())
+
+    # 處理雙聲道 (只取左聲道畫圖，避免維度錯誤)
+    if sound.channels == 2:
+        samples = samples.reshape((-1, 2))[:, 0]
+
+    # 建立畫布
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    # 繪製頻譜 (NFFT=1024, noverlap=512 是標準設定)
+    # cmap='inferno' 會讓能量強的地方顯示亮黃色，弱的地方顯示黑色/紫色，看起來很像聲學軟體
+    Pxx, freqs, bins, im = ax.specgram(samples, Fs=sound.frame_rate, NFFT=1024, noverlap=512, cmap='inferno')
+
+    ax.set_title(title)
+    ax.set_ylabel('Frequency (Hz)')
+    ax.set_xlabel('Time (s)')
+
+    # 回傳這張圖
+    return fig
+
 # --- 網站介面邏輯 ---
 
 st.title("🎵 影片/音訊 降噪與畫質增強器")
@@ -140,7 +168,8 @@ if uploaded_file is not None:
 
                 with col1:
                     st.markdown("### 🎧 處理前 (原始)")
-                    # 【修正點】讀取原始檔 bytes 放入記憶體，避免 Windows 檔案佔用鎖死
+
+                    # 1. 播放原始檔
                     if is_video:
                         with open(input_path, "rb") as f:
                             video_bytes = f.read()
@@ -150,24 +179,34 @@ if uploaded_file is not None:
                             audio_bytes = f.read()
                         st.audio(audio_bytes)
 
+                    # 2. 顯示原始頻譜 (新增的部分)                     st.markdown("**原始頻譜圖 (Spectrogram):**")
+                    with st.spinner("正在生成原始頻譜..."):
+                        fig_original = plot_spectrogram(processing_source, "Original Audio Spectrogram")
+                        st.pyplot(fig_original)
+                        plt.close(fig_original)  # 釋放記憶體
+
                 with col2:
                     st.markdown("### 🎹 處理後 (降噪)")
-                    # 讀取處理後的檔案
+
+                    # 1. 播放處理後的檔
                     with open(final_output_path, "rb") as f:
                         processed_audio_bytes = f.read()
                     st.audio(processed_audio_bytes, format='audio/mp3')
 
-                    # 下載按鈕
+                    # 2. 顯示降噪頻譜 (新增的部分)
+                    st.markdown("**降噪後頻譜圖 (Spectrogram):**")
+                    with st.spinner("正在生成降噪頻譜..."):
+                        fig_processed = plot_spectrogram(final_output_path, "Denoised Audio Spectrogram")
+                        st.pyplot(fig_processed)
+                        plt.close(fig_processed)  # 釋放記憶體
+
+                    # 下載按鈕 (保持原本的位置)
                     st.download_button(
                         label="📥 下載處理後的 MP3",
                         data=processed_audio_bytes,
                         file_name=f"enhanced_{os.path.splitext(uploaded_file.name)[0]}.mp3",
                         mime="audio/mp3"
                     )
-            else:
-                st.error("降噪處理失敗。")
-        else:
-            st.error("音訊提取失敗。")
 
 st.markdown("---")
 st.caption("由 Streamlit, FFmpeg 與 Noisereduce 強力驅動")
