@@ -4,48 +4,54 @@ import subprocess
 import tempfile
 import numpy as np
 from pydub import AudioSegment
-from pydub.utils import mediainfo
 import noisereduce as nr
-from scipy.io import wavfile
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
 
 # 設定頁面配置
-st.set_page_config(page_title="音訊降噪與增強工具", page_icon="🎵", layout="centered")
+st.set_page_config(page_title="Acoustic Noise Reduction Project", page_icon="📊", layout="wide")
 
+# --- CSS 優化 (讓介面更乾淨) ---
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #0e1117;
+    }
+    .main-header {
+        font-size: 2.5rem;
+        color: #4CAF50;
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# --- 核心功能函數 ---
 
 def extract_audio_from_video(video_path, output_audio_path):
-    """
-    使用 FFmpeg 從影片中分離音軌 (整合使用者原本的邏輯)
-    """
+    """Extract audio track from video using FFmpeg."""
     command = [
-        "ffmpeg",
-        "-i", video_path,
-        "-vn",
-        "-acodec", "pcm_s16le",  # 轉為 wav 格式以便後續處理
-        "-ar", "44100",  # 設定採樣率
-        "-ac", "1",  # 轉為單聲道 (降噪效果通常較好)
-        "-y",  # 覆蓋已存在文件
-        output_audio_path
+        "ffmpeg", "-i", video_path, "-vn",
+        "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1",
+        "-y", output_audio_path
     ]
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError as e:
-        st.error(f"FFmpeg 錯誤: {e}")
+        st.error(f"FFmpeg Error: {e}")
         return False
 
-def enhance_audio(input_path, output_path):
-    """
-    針對人聲優化版：讀取音訊 -> 強力降噪 -> 輸出
-    """
-    try:
-        # 1. 使用 Pydub 讀取音訊
-        sound = AudioSegment.from_file(input_path)
 
-        # 轉換為 numpy array 以便進行數學運算
+def enhance_audio(input_path, output_path):
+    """Read Audio -> Apply Noise Reduction -> Export."""
+    try:
+        sound = AudioSegment.from_file(input_path)
         samples = np.array(sound.get_array_of_samples())
 
-        # 正規化數據到 -1.0 到 1.0 之間 (noisereduce 需要 float32)
+        # 正規化數據 (float32)
         if sound.sample_width == 2:
             data = samples.astype(np.float32) / 32768.0
         elif sound.sample_width == 4:
@@ -53,160 +59,191 @@ def enhance_audio(input_path, output_path):
         else:
             data = samples.astype(np.float32)
 
-        # 2. 應用降噪算法 (針對人聲優化參數)
-        # stationary=False: 啟用非穩態降噪，這對有背景說話聲的影片更有效，但處理時間會變長
+        # 應用降噪算法
         reduced_noise_data = nr.reduce_noise(
             y=data,
             sr=sound.frame_rate,
-            stationary=False,  # 關鍵修改：不假設噪音是固定的
-            prop_decrease=0.9, # 消除 90% 的偵測噪音
-            n_std_thresh_stationary=1.5, # 增加判斷閾值
-            time_constant_s=2.0, # 平滑處理
+            stationary=False,
+            prop_decrease=0.95,  # 稍微提高消除比例以增強視覺對比
+            n_std_thresh_stationary=1.5,
+            time_constant_s=2.0,
         )
 
-        # 將數據轉回 int16 以便 Pydub 讀取
+        # 轉回 int16
         reduced_noise_data = (reduced_noise_data * 32768.0).astype(np.int16)
 
-        # 重建 AudioSegment
         cleaned_sound = AudioSegment(
             reduced_noise_data.tobytes(),
             frame_rate=sound.frame_rate,
             sample_width=2,
             channels=1
         )
-
-        # 3. 輸出結果 (暫時關閉 Normalize 以凸顯降噪效果)
-        # 為了測試，我們先直接輸出處理後的結果，不自動拉大音量
         cleaned_sound.export(output_path, format="mp3")
         return True
-
     except Exception as e:
-        st.error(f"處理音訊時發生錯誤: {str(e)}")
+        st.error(f"Processing Error: {str(e)}")
         return False
 
 
-def plot_spectrogram(file_path, title):
+def plot_enhanced_spectrogram(file_path, title):
     """
-    繪製頻譜圖的函式
+    Plot spectrogram with Custom Hex Colors and HIGH-CONTRAST Black lines.
     """
-    # 讀取音訊
+    # Load data
     sound = AudioSegment.from_file(file_path)
-    # 轉成 numpy array
     samples = np.array(sound.get_array_of_samples())
-
-    # 處理雙聲道 (只取左聲道畫圖，避免維度錯誤)
     if sound.channels == 2:
         samples = samples.reshape((-1, 2))[:, 0]
 
-    # 建立畫布
-    fig, ax = plt.subplots(figsize=(10, 4))
+    # Normalize
+    samples = samples.astype(np.float32)
+    max_val = np.max(np.abs(samples))
+    if max_val > 0:
+        samples = samples / max_val
 
-    # 繪製頻譜 (NFFT=1024, noverlap=512 是標準設定)
-    # cmap='inferno' 會讓能量強的地方顯示亮黃色，弱的地方顯示黑色/紫色，看起來很像聲學軟體
-    Pxx, freqs, bins, im = ax.specgram(samples, Fs=sound.frame_rate, NFFT=1024, noverlap=512, cmap='inferno')
+    # Create Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    ax.set_title(title)
-    ax.set_ylabel('Frequency (Hz)')
-    ax.set_xlabel('Time (s)')
+    # Set Background to White
+    fig.patch.set_facecolor('#ffffff')
+    ax.set_facecolor('#ffffff')
 
-    # 回傳這張圖
+    # --- CHANGE: Create a custom High-Contrast Colormap ---
+    # This creates a colormap that transitions from pure White to pure Black.
+    # Loud sounds will now be drawn in solid black, making them pop out.
+    colors = [(1, 1, 1), (0, 0, 0)]  # White -> Black
+    cmap_name = 'high_contrast_wb'
+    # N=256 gives a smooth transition, you can lower it for an even starker look
+    cm = mcolors.LinearSegmentedColormap.from_list(cmap_name, colors, N=256)
+
+    # Draw Spectrogram using the new custom colormap
+    Pxx, freqs, bins, im = ax.specgram(
+        samples,
+        Fs=sound.frame_rate,
+        NFFT=2048,
+        noverlap=1024,
+        cmap=cm,  # <--- Use the custom high-contrast map
+        scale='dB',
+        vmin=-80,
+        vmax=0
+    )
+
+    # --- Custom Hex Color Configuration (Same as before) ---
+    zones = [
+        {"range": (0, 100), "color": "#8B4513", "label": "0-100Hz: Rumble (Noise)"},
+        {"range": (100, 1000), "color": "#228B22", "label": "100-1k: Body (Fundamental)"},
+        {"range": (1000, 4000), "color": "#FFD700", "label": "1k-4k: Intelligibility"},
+        {"range": (4000, 22050), "color": "#DC143C", "label": ">4k: Air (Sibilance)"}
+    ]
+
+    # Draw colored overlays
+    for zone in zones:
+        # alpha=0.25 is good, but you can lower it to 0.2 if the lines are still obscure
+        ax.axhspan(zone["range"][0], zone["range"][1], color=zone["color"], alpha=0.25)
+
+    # Text Styling
+    ax.set_title(title, color='black', fontsize=14, pad=20)
+    ax.set_ylabel('Frequency (Hz)', color='black')
+    ax.set_xlabel('Time (s)', color='black')
+    ax.tick_params(axis='x', colors='black')
+    ax.tick_params(axis='y', colors='black')
+    ax.set_ylim(0, 10000)
+
+    # Custom Legend
+    legend_patches = [mpatches.Patch(color=z["color"], label=z["label"], alpha=0.5) for z in zones]
+    ax.legend(handles=legend_patches, loc='upper center', bbox_to_anchor=(0.5, -0.15),
+              fancybox=True, shadow=True, ncol=2, facecolor='#f0f0f0', labelcolor='black')
+
+    # Colorbar (Will now show White to Black)
+    cbar = fig.colorbar(im, ax=ax, format='%+2.0f dB')
+    cbar.ax.yaxis.set_tick_params(color='black')
+    plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='black')
+
     return fig
 
-# --- 網站介面邏輯 ---
 
-st.title("🎵 影片/音訊 降噪與畫質增強器")
-st.markdown("上傳您的影片或錄音檔，我們會自動提取音訊並去除背景雜音。")
+# --- 網站主邏輯 ---
 
-# 檔案上傳區
-uploaded_file = st.file_uploader("請選擇檔案 (支援 .mov, .mp4, .mp3, .wav)", type=["mov", "mp4", "mp3", "wav", "m4a"])
+st.markdown("<h1 class='main-header'>🎵 Acoustic Project: Video Denoising & Spectral Visualization</h1>", unsafe_allow_html=True)
+st.markdown("""
+This tool visualizes the effect of **AI Noise Reduction** on the audio spectrum. We divide the frequency into 4 acoustic zones:
+* **🟤 0~100Hz (Rumble)**: Low-end noise, wind, AC hum; usually needs removal.
+* **🟢 100~1000Hz (Body)**: Fundamental frequencies and thickness of the voice.
+* **🟡 1000~4000Hz (Intelligibility)**: The most sensitive area for human ears; affects speech clarity.
+* **🔴 >4000Hz (Air)**: High-frequency details and background hiss.
+""")
+
+uploaded_file = st.file_uploader("📂 Upload File (Support .mp4, .mov, .wav, .mp3)", type=["mov", "mp4", "mp3", "wav"])
 
 if uploaded_file is not None:
-    # 建立臨時目錄來存放檔案，避免路徑問題
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, uploaded_file.name)
         extracted_audio_path = os.path.join(temp_dir, "extracted_raw.wav")
         final_output_path = os.path.join(temp_dir, "cleaned_output.mp3")
 
-        # 將上傳的檔案寫入暫存區
         with open(input_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        st.info(f"檔案 `{uploaded_file.name}` 上傳成功！準備處理...")
-
-        # 判斷是否為影片
+        # Determine process flow
         file_extension = os.path.splitext(input_path)[1].lower()
         is_video = file_extension in ['.mov', '.mp4', '.avi', '.mkv']
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        status_box = st.status("🚀 System Processing...", expanded=True)
 
-        # 第一步：獲取音訊
+        # 1. Extraction / Loading
         if is_video:
-            status_text.text("正在從影片中提取音訊...")
+            status_box.write("Extracting audio from video...")
             success = extract_audio_from_video(input_path, extracted_audio_path)
             processing_source = extracted_audio_path
         else:
-            status_text.text("正在讀取音訊檔...")
+            status_box.write("Loading audio file...")
             processing_source = input_path
             success = True
 
-        progress_bar.progress(40)
-
         if success:
-            # 第二步：降噪與增強
-            status_text.text("正在進行 AI 降噪處理 (這可能需要一點時間，請耐心等候)...")
+            # 2. Denoising
+            status_box.write("Applying AI Noise Reduction...")
             enhancement_success = enhance_audio(processing_source, final_output_path)
-            progress_bar.progress(90)
 
             if enhancement_success:
-                progress_bar.progress(100)
-                status_text.text("處理完成！")
-                st.success("音訊優化成功！")
+                status_box.update(label="✅ Processing Complete!", state="complete", expanded=False)
 
-                # 顯示結果對比
+                # --- Results Display ---
                 col1, col2 = st.columns(2)
 
+                # Left: Original
                 with col1:
-                    st.markdown("### 🎧 處理前 (原始)")
-
-                    # 1. 播放原始檔
+                    st.subheader("🎧 Original Audio (Raw)")
                     if is_video:
                         with open(input_path, "rb") as f:
-                            video_bytes = f.read()
-                        st.video(video_bytes)
+                            st.video(f.read())
                     else:
-                        with open(input_path, "rb") as f:
-                            audio_bytes = f.read()
-                        st.audio(audio_bytes)
+                        st.audio(processing_source)
 
-                    # 2. 顯示原始頻譜 (新增的部分)                     st.markdown("**原始頻譜圖 (Spectrogram):**")
-                    with st.spinner("正在生成原始頻譜..."):
-                        fig_original = plot_spectrogram(processing_source, "Original Audio Spectrogram")
-                        st.pyplot(fig_original)
-                        plt.close(fig_original)  # 釋放記憶體
+                    st.markdown("**Original Spectrogram**")
+                    with st.spinner("Rendering Original Plot..."):
+                        fig_orig = plot_enhanced_spectrogram(processing_source, "Original Audio Spectrogram")
+                        st.pyplot(fig_orig)
 
+                # Right: Processed
                 with col2:
-                    st.markdown("### 🎹 處理後 (降噪)")
-
-                    # 1. 播放處理後的檔
+                    st.subheader("🎹 Denoised Audio")
                     with open(final_output_path, "rb") as f:
-                        processed_audio_bytes = f.read()
-                    st.audio(processed_audio_bytes, format='audio/mp3')
+                        processed_bytes = f.read()
+                    st.audio(processed_bytes, format='audio/mp3')
 
-                    # 2. 顯示降噪頻譜 (新增的部分)
-                    st.markdown("**降噪後頻譜圖 (Spectrogram):**")
-                    with st.spinner("正在生成降噪頻譜..."):
-                        fig_processed = plot_spectrogram(final_output_path, "Denoised Audio Spectrogram")
-                        st.pyplot(fig_processed)
-                        plt.close(fig_processed)  # 釋放記憶體
+                    st.markdown("**Denoised Spectrogram**")
+                    st.info("💡 Note: Observe if the **Brown Zone (Rumble)** turns black. This indicates noise removal.")
+                    with st.spinner("Rendering Denoised Plot..."):
+                        fig_clean = plot_enhanced_spectrogram(final_output_path, "Cleaned Audio Spectrogram")
+                        st.pyplot(fig_clean)
 
-                    # 下載按鈕 (保持原本的位置)
                     st.download_button(
-                        label="📥 下載處理後的 MP3",
-                        data=processed_audio_bytes,
-                        file_name=f"enhanced_{os.path.splitext(uploaded_file.name)[0]}.mp3",
+                        label="📥 Download Cleaned MP3",
+                        data=processed_bytes,
+                        file_name="enhanced_audio.mp3",
                         mime="audio/mp3"
                     )
 
 st.markdown("---")
-st.caption("由 Streamlit, FFmpeg 與 Noisereduce 強力驅動")
+st.caption("Powered by Streamlit, FFmpeg & Noisereduce")
